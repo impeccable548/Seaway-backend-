@@ -1,77 +1,83 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask import Flask, jsonify, request
 import requests
-from functools import lru_cache
-from dotenv import load_dotenv
 import os
-
-# Load environment variables
-load_dotenv()
+from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
 # ====== CONFIG ======
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")  # From .env or Render environment
-# ===================
+OPENWEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 
-# ====== CACHING ======
-@lru_cache(maxsize=10)
+# ====== HELPERS ======
 def fetch_weather(city):
-    url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={WEATHER_API_KEY}&units=metric"
     try:
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "city": data.get("name"),
-                "temperature": data["main"].get("temp"),
-                "humidity": data["main"].get("humidity"),
-                "description": data["weather"][0].get("description")
-            }
-        else:
-            return {"error": f"OpenWeatherMap failed for '{city}'"}
-    except Exception as e:
-        return {"error": f"Weather API error: {str(e)}"}
-
-@lru_cache(maxsize=10)
-def fetch_coordinates(location):
-    url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": location, "format": "json"}
-    headers = {"User-Agent": "MyWeatherApp/1.0"}  # Required by Nominatim
-    try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={city}&appid={OPENWEATHER_API_KEY}&units=metric"
+        print(f"🔍 Fetching weather from: {url}")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
-        if data:
-            coords = data[0]
-            return {
-                "latitude": coords["lat"],
-                "longitude": coords["lon"],
-                "display_name": coords["display_name"]
-            }
-        else:
-            return {"error": f"No coordinates found for '{location}'"}
+        print("✅ Weather data received.")
+        return {
+            "city": data.get("name", city),
+            "temperature": data["main"]["temp"],
+            "description": data["weather"][0]["description"],
+            "humidity": data["main"]["humidity"]
+        }
     except Exception as e:
-        return {"error": f"Map API error: {str(e)}"}
+        print(f"❌ Weather API error: {e}")
+        return {"error": str(e)}
+
+
+def fetch_coordinates(location):
+    try:
+        url = f"https://nominatim.openstreetmap.org/search?q={location}&format=json&limit=1"
+        print(f"🌍 Fetching coordinates from: {url}")
+        response = requests.get(url, headers={"User-Agent": "SeawayApp/1.0"}, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            raise ValueError("Location not found.")
+        print("✅ Coordinates data received.")
+        return {
+            "display_name": data[0]["display_name"],
+            "latitude": data[0]["lat"],
+            "longitude": data[0]["lon"]
+        }
+    except Exception as e:
+        print(f"❌ Coordinates API error: {e}")
+        return {"error": str(e)}
 
 # ====== ROUTES ======
-@app.route("/weather")
-def weather_route():
-    city = request.args.get("city", "Lagos")
-    return jsonify(fetch_weather(city))
+@app.route("/")
+def home():
+    return jsonify({"message": "Seaway API is live 🌊"})
 
-@app.route("/map")
-def map_route():
-    location = request.args.get("location", "Lagos")
-    return jsonify(fetch_coordinates(location))
 
 @app.route("/weather-map")
-def weather_map_route():
-    location = request.args.get("location", "Lagos")
-    weather = fetch_weather(location)
+def weather_map():
+    location = request.args.get("location", "")
+    if not location:
+        return jsonify({"error": "Missing location parameter"}), 400
+    
+    print(f"📍 Handling request for location: {location}")
+
     coords = fetch_coordinates(location)
-    return jsonify({"weather": weather, "coordinates": coords})
+    if "error" in coords:
+        return jsonify({"error": f"Coordinates fetch failed: {coords['error']}"}), 500
+    
+    weather = fetch_weather(location)
+    if "error" in weather:
+        return jsonify({"error": f"Weather fetch failed: {weather['error']}"}), 500
+    
+    print("🚀 Successfully combined data.")
+    return jsonify({
+        "coordinates": coords,
+        "weather": weather
+    })
+
 
 # ====== RUN SERVER ======
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # ✅ Important for Render to detect and bind to the right port
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)
